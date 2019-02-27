@@ -1,0 +1,363 @@
+---
+title: "Dots_Unique"
+author: "Kelsey Moty"
+date: "February 25, 2019"
+output: html_document
+---
+Loading libraries
+```{r setup,include=FALSE,}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(lubridate)
+library(stringr)
+library(geepack)
+library(emmeans)
+```
+
+Loading in data file
+```{r datasets, echo=FALSE, include=FALSE}
+file <- here::here("02_experiment/expt2_unique/data", "Data_Dots_Unique_2.25.19.csv")
+
+raw_data <- read_csv(file)
+raw_data <- raw_data[,1:21]
+colnames(raw_data) <- c("id", "dob", "dot", "age_cat", "condition", "order",  "square", "triangle", "star", "eye", "read", "hair", "pangolin", "quetzal", "tapir", "capybara", "jerboa", "fossa", "tarsier", "markhor", "numbat")
+
+file <- here::here("02_experiment/expt2_unique/data", "dots_unique_demo.csv")
+demographics <- read_csv(file)
+colnames(demographics) <- c("id", "gender", "dob", "dot", "condition.order", "comments")
+```
+
+Merge demo and dataset
+```{r combine, echo=FALSE}
+dataset <- full_join(raw_data, demographics, by = "id")
+
+# combining dob and dot data
+dataset$dob.x <- ifelse(is.na(dataset$dob.x), dataset$dob.y, dataset$dob.x)
+dataset$dot.x <- ifelse(is.na(dataset$dot.x), dataset$dot.y, dataset$dot.x)
+
+# removing extraneous columns and renaming
+dataset <- dataset %>% 
+  dplyr::select(-c("dob.y", "dot.y")) %>% 
+  dplyr::rename(dob = dob.x, dot = dot.x)
+```
+
+Renaming condition variables
+```{r}
+dataset <- dataset %>% 
+  mutate(condition = dplyr::recode(condition, 
+                                   `0` = "Baseline", 
+                                   `1` = "Explanatory", 
+                                   `2` = "Unique"))
+```
+
+Computing age
+```{r}
+dataset$dob <- mdy(dataset$dob)
+dataset$dot <- mdy(dataset$dot)
+dataset$age <- dataset$dot - dataset$dob
+dataset$age_exact <- as.numeric(round(dataset$age/365.25, 2))
+dataset$age_year <- abs(floor(dataset$age/365))
+
+# merging age_cat and age_year
+dataset$age_year <- ifelse(is.na(dataset$age_year), dataset$age_cat, dataset$age_year)
+
+# removing unneeded age columns
+dataset <- dataset %>% 
+  select(-c("age_cat", "age"))
+
+# removing 3-year-olds
+dataset <- dataset[!(dataset$age_year == 3),]
+
+# combining 6s and 7s
+dataset$age_cat <- ifelse(dataset$age_year == 7, 6, dataset$age_year)
+```
+
+Removing dropped participants
+```{r}
+## TODO: go back to check why people were dropped
+
+# in the dataset, some drops were marked by * listed with the condition
+dataset <- dataset[!grepl("\\*", dataset$condition),]
+
+# in the dataset, sometimes dropping participant was mentioned in the comments
+dataset <- dataset[!grepl("(?i)drop", dataset$comments),]
+
+# removing people with missing data
+dataset <- dataset[grepl("*", dataset$pangolin),]
+```
+
+# Getting individual means
+Here I am computing individual means for responses across the 9 animal trials. On individual trials, 3 = "all", 2 = "lots", 1 = "just some". Higher means mean participants had a higher tendency to respond "all" (or "lots"). Lower means mean participants had a higher tendency to respond "just some"
+```{r, results=FALSE, warning=FALSE}
+dataset <- dataset %>% 
+  dplyr::mutate(age_cat = as.factor(age_cat)) %>% 
+  dplyr::rowwise() %>% 
+  dplyr::mutate(average = mean(c(pangolin, quetzal, tapir, capybara, jerboa, 
+                          fossa, tarsier, markhor, numbat)))
+```
+
+Computing means across conditions and ages
+```{r, echo=FALSE}
+data_means <- dataset %>% 
+  dplyr::group_by(age_cat, condition) %>% 
+  dplyr::summarize(mean = mean(average), 
+         n = length(average)) 
+                      
+# Looking at means of across each animal
+animal_means <- dataset %>% 
+  dplyr::group_by(condition) %>%
+  dplyr::summarise_all(funs(mean))
+```
+
+Creating long form of dataset to be used for the GEE analyses
+```{r}
+dataset_long <- dataset %>%
+  select(id, condition, pangolin:numbat, age_cat, age_exact) %>% 
+  gather(animal, response, -id, -condition, -age_cat, -age_exact) 
+```
+
+# Analyses
+ANOVA comparing average response by age (here age is treated categorically) and condition (Baseline, Explanatory, and Unique)
+```{r}
+results <- aov(average ~ age_cat*condition, data = dataset)
+summary(results)
+```
+
+Binomial gee for "all"" responses
+Here a binary analysis makes more sense than a multinomial because even the responses are along three-point scale, kids are individually asked yes/no on any given trial. E.g., "Do you think all pangolins have XX" and kids respond yes or no. As opposed to asking kids "Do you think all, lots, or just some pangolins have XX"
+```{r}
+# converting data into binary for all
+dataset_all <- dataset_long %>% 
+    mutate(response = as.numeric(dplyr::recode(response, 
+                                   `3` = "1", 
+                                   `2` = "0", 
+                                   `1` = "0")))
+
+# GEE
+results_all <- geeglm(response ~ age_cat + condition + age_cat*condition, 
+                  data = dataset_all, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(results_all)
+
+# To get Wald statistics from GEE
+results_anova_all <- anova(results_all)
+results_anova_all
+
+# Pairwise comparisons across condition 
+pairs(emmeans(results_all, ~ condition))
+```
+
+Binomial gee for lots
+```{r}
+# converting data into binary for lots
+dataset_lots <- dataset_long %>% 
+    mutate(response = as.numeric(dplyr::recode(response, 
+                                   `3` = "0", 
+                                   `2` = "1", 
+                                   `1` = "0")))
+
+# GEE
+results_test_lots <- geeglm(response ~ age_cat + condition + age_cat*condition, 
+                  data = dataset_lots, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(results_test_lots)
+
+# To get Wald statistics from GEE
+results_anova_lots <- anova(results_test_lots)
+results_anova_lots
+
+# Pairwise comparisons across condition 
+pairs(emmeans(results_test_lots, ~ condition))
+```
+
+Binomial gee for just some
+```{r}
+# converting data into binary for some
+dataset_some <- dataset_long %>% 
+    mutate(response = as.numeric(dplyr::recode(response, 
+                                   `3` = "0", 
+                                   `2` = "0", 
+                                   `1` = "1")))
+
+# GEE
+results_test_some <- geeglm(response ~ age_cat + condition + age_cat*condition, 
+                  data = dataset_some, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(results_test_some)
+
+# To get Wald statistics from GEE
+results_anova_some <- anova(results_test_some)
+results_anova_some
+
+# Pairwise comparisons across age x condition 
+pairs(emmeans(results_test_some, ~ age_cat|condition))
+```
+
+
+# Plots
+
+This first plot is looking at children's average responses across conditions
+```{r}
+theme_set(theme_classic())
+
+r1 <- ggplot(dataset, aes(factor(condition), average))
+# 
+# r1 + geom_boxplot(aes(color = factor(dataset$condition)),
+#                   size = 1.5,
+#                   fill = "#F6F6F6") + 
+#   labs(x = "Condition",
+#        y =" Average Response",
+#        fill = element_blank()) +
+#   theme(text         = element_text(size = 28),
+#         axis.title.x = element_text(size = 32, 
+#                                     face = "bold",
+#                                     margin = margin(t = 20, r = 0, b = 0, l = 0)),
+#         axis.title.y = element_text(size = 32, 
+#                                     face = "bold",
+#                                     margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+#   guides(color = FALSE) +
+#   geom_point(data = dataset, 
+#              aes(y = average, x = condition, color = factor(dataset$condition)),
+#              position = position_jitter(w = 0.06, h = 0.02),
+#              shape = 1,
+#              size = 2)
+# 
+averages_violin <- r1 + geom_violin(scale = "width",
+                 aes(fill = factor(dataset$condition)),
+                 draw_quantiles = .5) +
+  geom_point(data = dataset,
+             aes(y = average, x = condition),
+             position = position_jitter(w = 0.05, h = 0.02),
+             shape = 1,
+             size = 2) +
+  labs(x = "Condition",
+       y =" Average Response",
+       fill = element_blank()) +
+  theme(text         = element_text(size = 28),
+        axis.title.x = element_text(size = 32,
+                                    face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 32,
+                                    face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0))) +
+  guides(fill = FALSE)
+
+
+# r <- ggplot() + 
+#     geom_boxplot(data = dataset, 
+#     aes(y = average, x = condition, color = factor(dataset$condition)),
+#                   size = 1,
+#                   fill = "#F6F6F6",
+#     coef = 1.5,
+#     outlier.size = 0) +
+#   scale_y_continuous(expand = c(0, 0)
+#                      ) +
+#   coord_cartesian(ylim=c(.95,3.05)
+#                   ) + 
+#   labs(x = "Condition",
+#        y =" Average Response",
+#        title = " "
+#        ) +
+#   theme(text         = element_text(size = 28),
+#         axis.title.x = element_text(size = 32, 
+#                                     face = "bold",
+#                                     margin = margin(t = 20, r = 0, b = 0, l = 0)),
+#         axis.title.y = element_text(size = 32, 
+#                                     face = "bold",
+#                                     margin = margin(t = 0, r = 20, b = 0, l = 0))
+#             ) +
+#   geom_point(data = dataset, 
+#              aes(y = average, x = condition, color = condition),
+#              position = position_jitter(w = 0.05, h = 0.02),
+#              shape = 1,
+#              size = 2) + 
+#   guides(color = FALSE)
+averages_violin
+```
+
+This next plot looks at proportion of "all" "lots" and "just some" responses across conditions x age
+```{r}
+# computing proportions 
+dataset_graph <- dataset_long %>% 
+  dplyr::group_by(age_cat, condition, response) %>%
+  dplyr::summarize(n = length(response)) %>% # getting counts by age and condition
+  ungroup() %>% 
+  dplyr::group_by(age_cat, condition) %>% 
+  dplyr::mutate(n_total = sum(n), # getting total # participants across age and condition
+                prop = n/n_total, # computing proportions of all, lots, and some responses across age x condition
+                response = as.factor(response)) %>% 
+  dplyr::ungroup() %>%
+  dplyr::mutate(response = dplyr::recode(response,
+                `1` = "Some",
+                `2` = "Lots",
+                `3` = "All"))
+
+dataset_graph$response <- factor(dataset_graph$response, levels = c('All','Lots','Some'))
+
+responses_stackedbar <- ggplot(dataset_graph, aes(x = age_cat,
+                       y = prop, 
+                       fill = response)) +
+  geom_bar(stat = "identity") +
+  facet_wrap( ~ condition) + 
+  labs(x = "Age",
+       y = "Proportion of responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 32, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 32, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 28),
+        axis.text.y = element_text(size = 28),
+        strip.text = element_text(size = 28),
+        legend.text = element_text(size = 28)
+        )
+responses_stackedbar
+```
+
+This graph looks at proportions across animal trials 
+```{r}
+dataset_graph_animal <- dataset_long %>% 
+  dplyr::group_by(animal, condition, response) %>%
+  dplyr::summarize(n = length(response)) %>% 
+  ungroup() %>% 
+  dplyr::group_by(animal, condition) %>% 
+  dplyr::mutate(n_total = sum(n),
+                prop = n/n_total,
+                response = as.factor(response))
+
+dataset_graph_animal_baseline <- dataset_graph_animal %>% 
+  filter(condition == "Baseline")
+
+animal_stackedbar <- ggplot(dataset_graph_animal_baseline, aes(x = animal,
+                       y = prop, 
+                       fill = response)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Age",
+       y = "Proportion of responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 32, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 32, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 28),
+        axis.text.y = element_text(size = 28),
+        strip.text = element_text(size = 28),
+        legend.text = element_text(size = 28)
+        )
+animal_stackedbar
+```
+
