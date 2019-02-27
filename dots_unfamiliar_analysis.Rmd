@@ -1,0 +1,429 @@
+---
+title: "dots_unfamiliar"
+author: "Kelsey Moty"
+date: "February 25, 2019"
+output: html_document
+---
+
+Loading the libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(lubridate)
+library(stringr)
+library(geepack)
+library(emmeans)
+```
+
+Loading in data file
+```{r datasets, echo=FALSE, include=FALSE}
+file <- here::here("02_experiment/expt1_unfamiliar/data", "dots_unfamiliar_5.5.17.csv")
+
+raw_data <- read_csv(file)
+raw_data <- raw_data[,1:35]
+colnames(raw_data) <- c("id", "age_exact", "age_cat", "condition", "order", "square", "triangle", "star", "eye", "read", "hair", "dolphin", "cat", "cow", "bear", "bird", "zebra", "deer", "giraffe", "fish", "pig", "mouse", "dog", "pangolin", "quetzal", "tapir", "capybara", "axolotl", "jerboa", "fossa", "tarsier", "sundacolugo", "markhor", "numbat", "matamata")
+```
+
+Removing participants who aren't the right age
+```{r}
+# removing 3-year-olds or 8-year-olds
+dataset <- raw_data %>% 
+  filter(!(age_cat == 3 | age_cat == 8)) 
+
+# combining 6s and 7s
+dataset$age_cat <- ifelse(dataset$age_cat == 7, 6, dataset$age_cat)
+```
+
+Getting individual means
+Here I am computing individual means for responses across the 12 animal trials. On individual trials, 3 = "all", 2 = "lots", 1 = "just some". Higher means mean participants had a higher tendency to respond "all" (or "lots"). Lower means mean participants had a higher tendency to respond "just some"
+```{r}
+dataset <- dataset %>% 
+  dplyr::mutate(age_cat = as.factor(age_cat)) %>% 
+  dplyr::rowwise() %>% 
+  dplyr::mutate(
+    average_fam = mean(c(dolphin, cat, cow, bear, bird, zebra, deer, giraffe, fish, pig, mouse, dog)),
+    average_unf = mean(c(pangolin, quetzal, tapir, capybara, jerboa, 
+                         fossa, tarsier, markhor, numbat, matamata, sundacolugo, axolotl)))
+
+dataset_anova <- dataset %>% 
+  select(id, age_exact, age_cat, order, average_fam, average_unf) %>% 
+  gather(type, average, c(average_fam, average_unf))
+```
+
+Computing means across age and animal type
+```{r}
+data_means <- dataset_anova %>% 
+  dplyr::group_by(age_cat, type) %>% 
+  dplyr::summarize(mean = mean(average), 
+         n = length(average)) 
+```
+
+Computing "correct" answer for familiar animal
+Here I am looking at children's responses relative to adults' intuitions of variability for familiar animal categories. Whether a response was "correct" was determined by whether 1/3 of adults or more gave a particular response. For example, 1/3 of adults said "lots" for a particular animal and the other 2/3 of adults said "all", both "all" and "lots" would be considered correct responses. However, if fewer than 1/3 of adults said "lots", "lots" would no longer be a correct response
+
+This specific code is determining which particular responses are correct
+```{r}
+dataset_correct <- dataset %>% 
+  filter(age_cat == 35) %>% # filtering out just adults
+  select(dolphin:dog) %>% # getting familiar animal trials
+  gather(animal, response) %>% # converting to long format
+  group_by(animal, response) %>%
+  tally() %>% # tallying responses 
+  mutate(prop = n/26) # computing proportion of responses adults gave by animal and response type
+
+dataset_correct$correct <- ifelse(dataset_correct$prop > .33, "1", "0")
+```
+
+This code is checking to see on which trials participants had "correct" intuitions about variability within familiar animal categories
+```{r}
+# creating a long form of dataset
+dataset_long <- dataset %>%
+  gather(animal, response, -c(id:order, average_fam, average_unf)) 
+
+# determining which of teh trials are familiar, unfamiliar, or practice
+practice <- c("square", "triangle", "star", "hair", "read", "eye")
+familiar <- c("dolphin", "cat", "cow", "bear", "bird", "zebra", "deer", "giraffe", "fish", "pig", "mouse", "dog")
+unfamiliar <- c("pangolin", "quetzal", "tapir", "capybara", "axolotl", "jerboa", "fossa", "tarsier", "sundacolugo", "markhor", "numbat", "matamata")
+
+dataset_long$type <- ifelse(dataset_long$animal %in% practice, "practice", 
+  ifelse(dataset_long$animal %in% familiar, "familiar", "unfamiliar"))
+
+# merging correct to long by animal and response: essentially this is creating a "correct" column
+dataset_long <- full_join(dataset_long, dataset_correct)
+
+# if correct column has an NA, assigning 0 because that mean kid did not get it correct
+dataset_long$correct <- ifelse(dataset_long$type == "familiar" & is.na(dataset_long$correct), 0, dataset_long$correct)
+```
+
+Plotting whether use of all lots and just some for familiar animals
+```{r}
+## TODO recreate this file using the raw data imported 
+another_file <- here::here("02_experiment/expt1_unfamiliar/data", "familiar_response_avg_Dots-Unf.csv")
+
+summary_data <- read_csv(another_file)
+
+familiar_stackedbar <- ggplot(summary_data, aes(x = age,
+                       y = average, 
+                       fill = response)) +
+  geom_bar(stat = "identity") +
+  facet_wrap( ~ prevalence) + 
+  labs(x = "Age",
+       y = "Proportion of responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 32, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 32, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 28),
+        axis.text.y = element_text(size = 28),
+        strip.text = element_text(size = 28),
+        legend.text = element_text(size = 28)
+        )
+familiar_stackedbar
+```
+
+
+Looking at proportion "correct" across age. First I do a regression where age is treated categorically because adults are included in the analyses. In the second regression, age is treated continuously
+```{r}
+# first need to filter out just familiar trials from dataset 
+dataset_long_familiar <- dataset_long %>% 
+  filter(type == "familiar") %>% 
+  group_by(id) %>% 
+  dplyr::mutate(correct_prop = mean(as.numeric(correct))) #computing individual proportion correct score
+
+# # keeping only one row per participant
+dataset_familiar <- dataset_long_familiar %>% 
+    distinct(id, .keep_all = TRUE) 
+
+# treating age categorically; testing children and adults
+fit <- lm(correct_prop ~ age_cat, data = dataset_familiar)
+anova(fit)
+
+# pairwise comparison across age
+pairs(emmeans(fit, ~ age_cat)) 
+
+# now pulling out just children so we can do exact age 
+dataset_familiar_child <- dataset_familiar %>% 
+  filter(age_cat != 35)
+
+# regression of correct by exact age
+fit <- lm(correct_prop ~ age_exact, data = dataset_familiar_child)
+anova(fit)
+
+```
+
+Plotting correct responses by exact age (adults are not included in this graph)
+```{r}
+plot_correct <- ggplot(
+              data = dataset_familiar_child,
+              aes(y = correct_prop, 
+                  x = age_exact)) + 
+  geom_point(
+             position = position_jitter(w = 0, h = 0.1),
+             size = 2,
+             shape = 1,
+             alpha = .4
+  ) + 
+  geom_smooth(
+              method = lm,
+              color = "black",
+              fill = "#009E73"
+  ) +
+  scale_y_continuous(expand = c(0, 0)
+  ) +
+  coord_cartesian(ylim=c(0,1.1),
+                  xlim=c(3.99,8)
+  ) + 
+  labs(x = "Age",
+       y = "Participants' Responses"
+  ) +
+  theme(text         = element_text(size = 14),
+        plot.title   = element_text(size = 14,
+                                    face = "bold",
+                                    hjust = .5),
+        axis.title.x = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        strip.text = element_text(size = 12),
+        strip.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.background = element_rect(fill = NA)
+  ) + 
+  guides(shape = FALSE)
+
+plot_correct
+```
+
+I next pulled out the "correct" responses  for familiar animal where one of the correct responses wasn't "all". I did this because I wanted to test whether children were generally getting better at recognizing the real-world prevalence of properties across properties of all frequencies, or if specifically, children were getting better at recognizing the relative rarity of less frequent properties with age.
+
+First, I create the dataset for this analysis
+```{r}
+# finding out which of the animals where "all" was a correct answer 
+animal_all <- dataset_correct$animal[c(dataset_correct$response == 3 & dataset_correct$correct == 1)]
+
+# creating dataset without these animals and recalculating proportion correct for reduced number of trials 
+dataset_familiar_highvar <- dataset_long_familiar %>% 
+  filter(!animal %in% animal_all) %>% # filtering out those animals from this dataset
+  group_by(id) %>% 
+  dplyr::mutate(correct_prop = mean(as.numeric(correct))) %>% # recalculating prop correct 
+  distinct(id, .keep_all = TRUE) # keeping only one row per participant
+
+# creating a dataset without adults
+dataset_familiar_highvar_child <- dataset_familiar_highvar %>% 
+  filter(age_cat != "35")
+```
+
+Next, I do two regressions 
+```{r}
+# treating age categorically; testing children and adults
+fit <- lm(correct_prop ~ age_cat, data = dataset_familiar_highvar)
+anova(fit)
+
+# pairwise comparison of age
+pairs(emmeans(fit, ~ age_cat)) 
+
+# regression with just kids; age treated as continuous
+fit <- lm(correct_prop ~ age_exact, data = dataset_familiar_highvar_child)
+anova(fit)
+```
+
+Here, I plot correct across age for just these high variable properties
+```{r}
+plot_correct_high <- ggplot(
+             data = dataset_familiar_highvar_child,
+             aes(y = correct_prop, x = age_exact)) + 
+  geom_point(
+             position = position_jitter(w = 0, h = 0.1),
+             size = 2,
+             shape = 1,
+             alpha = .4
+  ) + 
+  geom_smooth(
+              method = lm,
+              color = "black",
+              fill = "#009E73"
+  ) +
+  scale_y_continuous(expand = c(0, 0)
+  ) +
+  coord_cartesian(ylim=c(0,1.1),
+                  xlim=c(3.99,8)
+  ) + 
+  labs(x = "Age",
+       y = "Participants' Responses"
+  ) +
+  theme(text         = element_text(size = 14),
+        plot.title   = element_text(size = 14,
+                                    face = "bold",
+                                    hjust = .5),
+        axis.title.x = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        strip.text = element_text(size = 12),
+        strip.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.background = element_rect(fill = NA)
+  ) + 
+  guides(shape = FALSE)
+
+plot_correct_high
+```
+
+Next, I check to see if age predicts correct responses for these low variable properties
+```{r}
+# creating dataset with low variable animals and recalculating proportion correct for reduced number of trials 
+dataset_familiar_lowvar <- dataset_long %>% 
+  filter(animal %in% animal_all) %>% # keeping the low variable animals in this dataset
+  group_by(id) %>% 
+  dplyr::mutate(correct_prop = mean(as.numeric(correct))) %>% # recalculating prop correct 
+  distinct(id, .keep_all = TRUE) # keeping only one row per participant
+
+# separate dataset for just kids
+dataset_familiar_lowvar_child <- dataset_familiar_lowvar %>% 
+  filter(age_cat != "35")
+```
+
+
+Next, I do two regressions looking at age predicting correct responses for these low variable animals
+```{r}
+# treating age categorically; testing children and adults
+fit <- lm(correct_prop ~ age_cat, data = dataset_familiar_lowvar)
+anova(fit)
+
+# pairwise comparison of age
+pairs(emmeans(fit, ~ age_cat)) 
+
+# regression wih just kids
+fit <- lm(correct_prop ~ age_exact, data = dataset_familiar_lowvar_child)
+anova(fit)
+```
+
+# Graphing age for high variability animals
+```{r}
+plot_correct_low <- ggplot() + 
+  geom_point(data = dataset_familiar_lowvar_child,
+             aes(y = correct_prop, x = age_exact),
+             position = position_jitter(w = 0, h = 0.1),
+             size = 2,
+             shape = 1,
+             alpha = .4
+  ) + 
+  geom_smooth(data = dataset_familiar_lowvar_child,
+              aes(y = correct_prop, x = age_exact),
+              method = lm,
+              color = "black",
+              fill = "#009E73"
+  ) +
+  scale_y_continuous(expand = c(0, 0)
+  ) +
+  coord_cartesian(ylim=c(0,1.1),
+                  xlim=c(3.99,8)
+  ) + 
+  labs(x = "Age",
+       y = "Participants' Responses"
+  ) +
+  theme(text         = element_text(size = 14),
+        plot.title   = element_text(size = 14,
+                                    face = "bold",
+                                    hjust = .5),
+        axis.title.x = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        strip.text = element_text(size = 12),
+        strip.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.background = element_rect(fill = NA)
+  ) + 
+  guides(shape = FALSE)
+
+plot_correct_low
+```
+
+Next, I checked to see if knowledge of variability in familiar animals predicts expectations of variability in unfamiliar animals. First, I check using the proportion of correct with the full dataset, and then I check with the proportion of correct from the dataset with only those animals with these highly variable properties
+```{r}
+# Full dataset
+# treating age categorically; testing children and adults
+unfamiliar <- lm(average_unf ~ age_cat + correct_prop + age_cat*correct_prop, 
+                      data = dataset_familiar)
+anova(unfamiliar)
+
+# pairwise comparison of age
+pairs(emmeans(unfamiliar, ~ age_cat)) 
+
+# age treated continuously
+unfamiliar_child <- lm(average_unf ~ age_exact + correct_prop + age_exact*correct_prop, 
+                            data = dataset_familiar_child)
+anova(unfamiliar_child)
+
+# Dataset with animals with highly variable properties 
+# treating age categorically; testing children and adults
+unfamiliar_highvar <- lm(average_unf ~ age_cat + correct_prop + age_cat*correct_prop, 
+                         data = dataset_familiar_highvar)
+anova(unfamiliar_highvar)
+
+# pairwise comparison of age
+pairs(emmeans(unfamiliar_highvar, ~ age_cat)) 
+
+# age treated continuously
+unfamiliar_highvar_child <- lm(average_unf ~ age_exact + correct_prop + correct_prop*age_exact, 
+                               data = dataset_familiar_highvar_child)
+anova(unfamiliar_highvar_child)
+
+```
+
+Here, I plot expectations of variability in unfamiliar categories. Here, I am using the dataset with only the high variable properties, but looks similar when using the full dataset
+```{r}
+plot_unfamiliar <- ggplot() + 
+  geom_point(data = dataset_familiar_highvar_child,
+             aes(y = average_unf, x = correct_prop),
+             position = position_jitter(w = 0.03, h = 0.03),
+             size = 2,
+             shape = 1,
+             alpha = .4
+  ) + 
+  geom_smooth(data = dataset_familiar_highvar_child,
+              aes(y = average_unf, x = correct_prop),
+              method = lm,
+              color = "black",
+              fill = "#009E73"
+  ) +
+  scale_y_continuous(expand = c(0, 0)
+  ) +
+  coord_cartesian(ylim=c(1,3),
+                  xlim=c(0,1)
+  ) + 
+  labs(x = "Age",
+       y = "Participants' Responses"
+  ) +
+  theme(text         = element_text(size = 14),
+        plot.title   = element_text(size = 14,
+                                    face = "bold",
+                                    hjust = .5),
+        axis.title.x = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        strip.text = element_text(size = 12),
+        strip.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.background = element_rect(fill = NA)
+  ) + 
+  guides(shape = FALSE)
+
+plot_unfamiliar
+```
