@@ -97,6 +97,20 @@ dataset_long <- full_join(dataset_long, dataset_correct)
 dataset_long$correct <- ifelse(dataset_long$type == "familiar" & is.na(dataset_long$correct), 0, dataset_long$correct)
 ```
 
+Here, I am adding the property type associated with each animal trial. This will be used to look at children's responses relative to property type. 
+```{r}
+behavior <- c("dolphin", "bird", "rat", "tapir", "capybara", "jerboa")
+temporary <- c("cat", "fish", "pig", "axolotl", "sundacolugo", "matamata")
+color <- c("cow", "bear", "zebra", "quetzal", "fossa", "tarsier")
+part <- c("deer", "giraffe", "dog", "pangolin", "markhor", "numbat")
+
+dataset_long$property <- ifelse(dataset_long$animal %in% behavior, "behavior",
+                                ifelse(dataset_long$animal %in% temporary, "temporary",
+                                       ifelse(dataset_long$animal %in% color, "color", 
+                                              ifelse(dataset_long$animal %in% part, "part", "NA")))) 
+```
+
+
 Plotting whether use of all lots and just some for familiar animals
 ```{r}
 ## TODO recreate this file using the raw data imported 
@@ -427,3 +441,212 @@ plot_unfamiliar <- ggplot() +
 
 plot_unfamiliar
 ```
+
+Now, I am looking at expectations of variability in unfamiliar animals depending on property types. Here, I am including a binary analysis of the data. This type of analysis makes more sense than a multinomial because even the responses are along three-point scale, kids are individually asked yes/no on any given trial. E.g., "Do you think all pangolins have XX" and kids respond yes or no. As opposed to asking kids "Do you think all, lots, or just some pangolins have XX"
+
+First, I get the data prepped.
+```{r}
+# first creating a dataset for these analyses 
+dataset_long_unfamiliar <- dataset_long %>% 
+  filter(type == "unfamiliar") %>% # getting just the unfamiliar trials
+  dplyr::mutate(response_all = ifelse(response == 3, 1, 0), # coding binary variabile for all, lots, some for gee
+                response_lots = ifelse(response == 2, 1, 0),
+                response_some = ifelse(response == 1, 1, 0)) %>% 
+  group_by(id, property) %>% 
+  dplyr::mutate(prop_all = mean(response_all), # getting proportion of all responses per kid per prop type
+                prop_lots = mean(response_lots),
+                prop_some = mean(response_some))
+  
+# also getting a separate dataset with just child participants
+dataset_long_unfamiliar_child <- dataset_long_unfamiliar %>% 
+  filter(age_cat != 35)
+```
+
+Next, I run a regression where response is treated using a 3-point scale. 
+```{r}
+# age treated categorically
+property_type <- lm(response ~ age_cat + property + age_cat*property + (1|id), 
+                            data = dataset_long_unfamiliar)
+anova(property_type)
+
+#pairwise comparisons
+pairs(emmeans(property_type, ~ age_cat|property)) 
+```
+
+Then, I run the GEE's for the three response types. 
+All responses:
+```{r}
+# Gee of all responses by age and property type
+property_all <- geeglm(response_all ~ age_exact + property + age_exact*property, 
+                  data = dataset_long_unfamiliar_child, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(property_all)
+
+# To get Wald statistics from GEE
+property_anova_all <- anova(property_all)
+property_anova_all
+
+# pairwise compairons 
+pairs(emmeans(property_all, ~ property)) 
+```
+
+Lots responses: 
+```{r}
+# Gee of all responses by age and property type
+property_lots <- geeglm(response_lots ~ age_exact + property + age_exact*property, 
+                  data = dataset_long_unfamiliar_child, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(property_lots)
+
+# To get Wald statistics from GEE
+property_anova_lots <- anova(property_lots)
+property_anova_lots
+
+# pairwise compairons 
+pairs(emmeans(property_lots, ~ property)) 
+```
+
+Just some responses:
+```{r}
+# Gee of all responses by age and property type
+property_some <- geeglm(response_some ~ age_exact + property + age_exact*property, 
+                  data = dataset_long_unfamiliar_child, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(property_some)
+
+# To get Wald statistics from GEE
+property_anova_some <- anova(property_some)
+property_anova_some
+
+# pairwise compairons 
+pairs(emmeans(property_some, ~ property)) 
+```
+
+Plotting responses across property type
+```{r}
+# keeping only one row per participant
+dataset_unfamiliar <- dataset_long_unfamiliar %>% 
+    distinct(id, property, .keep_all = TRUE) %>% 
+    mutate(age = ifelse(age_cat == 35, 9, age_exact))
+
+dataset_unfamiliar_child <- dataset_unfamiliar %>% 
+  filter(age_cat != 35)
+
+property_plot_template <- function(p, r, q){
+  ggplot(data = p, aes(x = r, y = q)) +
+  facet_grid(
+    . ~ property
+  ) +
+  geom_point(
+             position = position_jitter(w = 0.03, h = 0.03),
+             size = 2,
+             shape = 1,
+             alpha = .4
+  ) + 
+  geom_smooth(
+              method = lm,
+              color = "black",
+              fill = "#009E73"
+  ) +
+  scale_y_continuous(expand = c(0, 0)
+  ) +
+  coord_cartesian(ylim=c(0,1),
+                  xlim=c(4,8)
+  ) + 
+  labs(x = "Age",
+       y = "Participants' Responses"
+  ) +
+  theme(text         = element_text(size = 14),
+        plot.title   = element_text(size = 14,
+                                    face = "bold",
+                                    hjust = .5),
+        axis.title.x = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, 
+                                    face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        strip.text = element_text(size = 12),
+        strip.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.background = element_rect(fill = NA)
+  ) + 
+  guides(shape = FALSE)
+}
+
+plot_all <- property_plot_template(dataset_unfamiliar_child,
+                                   dataset_unfamiliar_child$age_exact, 
+                                   dataset_unfamiliar_child$prop_all)
+
+plot_lots <- property_plot_template(dataset_unfamiliar_child,
+                                    dataset_unfamiliar_child$age_exact, 
+                                    dataset_unfamiliar_child$prop_lots)
+
+plot_some <- property_plot_template(dataset_unfamiliar_child,
+                                    dataset_unfamiliar_child$age_exact, 
+                                    dataset_unfamiliar_child$prop_some)
+
+
+dataset_unfamiliar_plot <- dataset_long %>% 
+  filter(type == "unfamiliar") %>% 
+  dplyr::mutate(response_all = ifelse(response == 3, 1, 0),
+                response_lots = ifelse(response == 2, 1, 0),
+                response_some = ifelse(response == 1, 1, 0)) %>% 
+  group_by(property, age_cat) %>% 
+  dplyr::mutate(prop_all = mean(response_all),
+                prop_lots = mean(response_lots),
+                prop_some = mean(response_some)) %>% 
+  distinct(age_cat, property, .keep_all = TRUE) %>% 
+  select(age_cat, property, prop_all, prop_lots, prop_some) %>% 
+  gather(response_type, prop, -age_cat, -property)
+
+property_stackedbar <- ggplot(dataset_unfamiliar_plot, 
+                       aes(x = age_cat,
+                           y = prop, 
+                           fill = response_type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap( ~ property) + 
+  labs(x = "Age",
+       y = "Proportion of responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14)
+        )
+
+```
+
+This plot looks at proportion of all, lots, and just some responses by age (categorically) x property type
+```{r}
+property_stackedbar
+```
+
+Proportion of all responses by age (continuous); kid data only
+```{r}
+plot_all
+```
+
+Proportion of lots responses by age (continuous); kid data only
+```{r}
+plot_lots
+```
+
+Proportion of some responses by age (continuous); kid data only
+```{r}
+plot_some
+```
+
