@@ -1,0 +1,94 @@
+---
+title: "Untitled"
+author: "Kelsey Moty"
+date: "March 8, 2019"
+output: html_document
+---
+Libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(stringr)
+```
+
+Loading in data
+```{r, echo=FALSE, include=FALSE}
+file <- here::here("01_docs/talks/srcd_2019", "brandone2017_figures4and5.csv")
+
+data2017 <- read_csv(file)
+```
+
+Wide to long
+```{r}
+data2017_longa <- data2017 %>% 
+  gather(domain, average, animal, artifact, social) %>% 
+  select(age, response, property, domain, average)
+
+data2017_longb <- data2017 %>% 
+  gather(domain, se, se_animal, se_artifact, se_social) %>% 
+  select(age, response, property, domain, se) %>% 
+  mutate(domain = gsub("se_", "", domain))
+
+data2017_long <- full_join(data2017_longa, data2017_longb, by = c("age", "response", "property", "domain")) %>% 
+  mutate(age = gsub("dults", "", age),
+         property = gsub("/Function", "", property),
+         property = gsub("/Accidental", "", property))
+```
+
+Preparing the data for the plot: I am only interested in plotting the animal domain
+```{r}
+# reordering factor levels 
+data2017_long$response <- factor(data2017_long$response, levels = c("all", "lots", "few"))
+
+# pulling out just the animal data
+data2017_long_animal <- data2017_long %>% 
+  filter(domain == "animal")
+
+# some numbers .01 off from 1 (so slight changes so graph lines up)
+# this was likely due to rounding things up and down in the old dataset
+# but I don't have the individual data to recalculate this 
+# so this slighlt manip will have to do
+data2017_plot <- data2017_long_animal %>% 
+  mutate(average = ifelse(((property == "Color" & age == "7") |
+                           (property == "Temporary" & age == "6")) & 
+                            response == "all", 
+                            average + .01, 
+                            ifelse((property == "Parts" | property == "Temporary") & 
+                                    age == "4" & response == "all",
+                                    average - .01, average)))
+```
+
+Brandone (2017) data: children's and adults' inferences for the animal domain
+```{r}
+
+stackedbar2017 <- ggplot(data2017_plot, 
+                       aes(x = age,
+                           y = average, 
+                           fill = response)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  facet_grid( . ~ property ) + 
+  labs(x = "Age",
+       y = "Proportion of responses",
+       fill = element_blank()) +
+  scale_y_continuous(
+    expand = c(0, 0),
+    breaks = c(0,0.5,1)
+  ) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 14,
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, 
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14)
+  ) +
+  scale_fill_manual(values=c("#D81B60", "#1E88E5", "#FFC107"))
+
+stackedbar2017
+```
