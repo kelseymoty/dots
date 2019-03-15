@@ -19,17 +19,35 @@ library(emmeans)
 
 Loading in data file
 ```{r datasets, echo=FALSE, include=FALSE}
-file <- here::here("02_experiment/expt1_unfamiliar/data", "dots_unfamiliar_5.5.17.csv")
+file <- here::here("02_experiment/expt1_unfamiliar/data", "dots_unfamiliar_3.8.19.csv")
 
 raw_data <- read_csv(file)
-raw_data <- raw_data[,1:35]
-colnames(raw_data) <- c("id", "age_exact", "age_cat", "condition", "order", "square", "triangle", "star", "eye", "read", "hair", "dolphin", "cat", "cow", "bear", "bird", "zebra", "deer", "giraffe", "fish", "pig", "mouse", "dog", "pangolin", "quetzal", "tapir", "capybara", "axolotl", "jerboa", "fossa", "tarsier", "sundacolugo", "markhor", "numbat", "matamata")
+raw_data <- raw_data[,1:38]
+colnames(raw_data) <- c("id", "gender", "dob", "dot", "age_exact", "age_cat", "condition", "order", "square", "triangle", "star", "eye", "read", "hair", "dolphin", "cat", "cow", "bear", "bird", "zebra", "deer", "giraffe", "fish", "pig", "mouse", "dog", "pangolin", "quetzal", "tapir", "capybara", "axolotl", "jerboa", "fossa", "tarsier", "sundacolugo", "markhor", "numbat", "matamata")
+```
+
+Computing exact age
+```{r}
+dataset <- raw_data
+
+dataset$dob <- mdy(dataset$dob)
+dataset$dot <- mdy(dataset$dot)
+dataset$age <- dataset$dot - dataset$dob
+dataset$age_exact <- ifelse(is.na(dataset$age_exact),
+                            as.numeric(round(dataset$age/365.25, 2)), dataset$age_exact)
+dataset$age_year <- abs(floor(dataset$age/365))
+
+# merging age_cat and age_year
+dataset$age_cat <- ifelse(is.na(dataset$age_cat), dataset$age_year, dataset$age_cat)
+
+dataset <- dataset %>% 
+  select(-age, -age_year)
 ```
 
 Removing participants who aren't the right age
 ```{r}
 # removing 3-year-olds or 8-year-olds
-dataset <- raw_data %>% 
+dataset <- dataset %>% 
   filter(!(age_cat == 3 | age_cat == 8)) 
 
 # combining 6s and 7s
@@ -414,13 +432,15 @@ plot_unfamiliar <- ggplot() +
               color = "black",
               fill = "#009E73"
   ) +
-  scale_y_continuous(expand = c(0, 0)
+  scale_y_reverse( lim=c(3.05,.95),
+                   expand = c(0, 0),
+                   breaks = c(1,1.5,2,2.5,3),
+                   labels = c("3.0", "2.5", "2.0", "1.5", "1.0")
   ) +
-  coord_cartesian(ylim=c(1,3),
-                  xlim=c(0,1)
+  coord_cartesian(xlim=c(0,1)
   ) + 
-  labs(x = "Age",
-       y = "Participants' Responses"
+  labs(x = "Knowledge of variability in familiar animals",
+       y = "Expectations of variability in unfamiliar animals"
   ) +
   theme(text         = element_text(size = 14),
         plot.title   = element_text(size = 14,
@@ -460,24 +480,43 @@ dataset_long_unfamiliar <- dataset_long %>%
 # also getting a separate dataset with just child participants
 dataset_long_unfamiliar_child <- dataset_long_unfamiliar %>% 
   filter(age_cat != 35)
+
+# adding correct prop for familiar 
+dataset_long_unfamiliar_child <- dataset_familiar_highvar_child %>% 
+  select(id, correct_prop) %>% 
+  full_join(dataset_long_unfamiliar_child, by = "id")
 ```
 
 Next, I run a regression where response is treated using a 3-point scale. 
 ```{r}
 # age treated categorically
-property_type <- lm(response ~ age_cat + property + age_cat*property + (1|id), 
-                            data = dataset_long_unfamiliar)
+property_type <- lm(response ~ correct_prop + age_exact + property + correct_prop*property + correct_prop*age_exact + property*age_exact + property*age_exact*correct_prop + (1|id), 
+                            data = dataset_long_unfamiliar_child)
 anova(property_type)
 
 #pairwise comparisons
-pairs(emmeans(property_type, ~ age_cat|property)) 
+pairs(emmeans(property_type, ~ property)) 
 ```
 
 Then, I run the GEE's for the three response types. 
 All responses:
 ```{r}
+
+dataset_long_unfamiliar_child_noprop <- dataset_long_unfamiliar_child %>% 
+  dplyr::group_by(id) %>% 
+  dplyr::mutate(prop_all = sum(response_all)/12,
+         prop_lots = sum(response_lots)/12,
+         prop_some = sum(response_some)/12) 
 # Gee of all responses by age and property type
-property_all <- geeglm(response_all ~ age_exact + property + age_exact*property, 
+property_all <- geeglm(response_all ~ correct_prop + age_exact + correct_prop*age_exact, 
+                  data = dataset_long_unfamiliar_child_noprop, 
+                  family = binomial(logit), 
+                  id = id, 
+                  corstr = "exchangeable")
+summary(property_all)
+
+# Gee of all responses by age and property type
+property_all <- geeglm(response_some ~ age_exact * property + age_exact*property, 
                   data = dataset_long_unfamiliar_child, 
                   family = binomial(logit), 
                   id = id, 
@@ -489,13 +528,13 @@ property_anova_all <- anova(property_all)
 property_anova_all
 
 # pairwise compairons 
-pairs(emmeans(property_all, ~ property)) 
+pairs(emmeans(property_all, ~ age_exact)) 
 ```
 
 Lots responses: 
 ```{r}
 # Gee of all responses by age and property type
-property_lots <- geeglm(response_lots ~ age_exact + property + age_exact*property, 
+property_lots <- geeglm(response_lots ~ correct_prop + property + correct_prop*property, 
                   data = dataset_long_unfamiliar_child, 
                   family = binomial(logit), 
                   id = id, 
@@ -513,7 +552,7 @@ pairs(emmeans(property_lots, ~ property))
 Just some responses:
 ```{r}
 # Gee of all responses by age and property type
-property_some <- geeglm(response_some ~ age_exact + property + age_exact*property, 
+property_some <- geeglm(response_some ~ correct_prop + property + correct_prop*property, 
                   data = dataset_long_unfamiliar_child, 
                   family = binomial(logit), 
                   id = id, 
@@ -535,11 +574,16 @@ dataset_unfamiliar <- dataset_long_unfamiliar %>%
     distinct(id, property, .keep_all = TRUE) %>% 
     mutate(age = ifelse(age_cat == 35, 9, age_exact))
 
-dataset_unfamiliar_child <- dataset_unfamiliar %>% 
-  filter(age_cat != 35)
+dataset_unfamiliar_child <- dataset_long_unfamiliar_child %>% 
+  distinct(id, property, .keep_all = TRUE)
 
-property_plot_template <- function(p, r, q){
-  ggplot(data = p, aes(x = r, y = q)) +
+dataset_unfamiliar_child_long <- dataset_unfamiliar_child %>% 
+  gather(response_type, proportion, prop_all, prop_lots, prop_some) %>% 
+  mutate(response_type = gsub("prop_", "", response_type))
+
+
+property_plot_template <- function(p, r, q, s){
+  ggplot(data = p, aes(x = r, y = q, color = s, fill = s)) +
   facet_grid(
     . ~ property
   ) +
@@ -551,16 +595,20 @@ property_plot_template <- function(p, r, q){
   ) + 
   geom_smooth(
               method = lm,
-              color = "black",
-              fill = "#009E73"
+              color = "black"
   ) +
-  scale_y_continuous(expand = c(0, 0)
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = c(0, .33, .66, 1)
   ) +
   coord_cartesian(ylim=c(0,1),
-                  xlim=c(4,8)
+                  xlim=c(0,1)
   ) + 
-  labs(x = "Age",
-       y = "Participants' Responses"
+  scale_x_continuous(
+    breaks = c(0, .25, .5, .75, 1),
+    labels = c("0", "0.25", "0.5", "0.75", "1")
+  ) +
+  labs(x = "Knowledge of variability in familiar animal kinds",
+       y = "Proportion of all, lots, and some responses"
   ) +
   theme(text         = element_text(size = 14),
         plot.title   = element_text(size = 14,
@@ -577,12 +625,23 @@ property_plot_template <- function(p, r, q){
         panel.border = element_rect(color = "black", fill = NA),
         panel.background = element_rect(fill = NA)
   ) + 
-  guides(shape = FALSE)
+  guides(shape = FALSE,
+         fill = FALSE,
+         color = FALSE)
 }
 
-plot_all <- property_plot_template(dataset_unfamiliar_child,
-                                   dataset_unfamiliar_child$age_exact, 
-                                   dataset_unfamiliar_child$prop_all)
+plot_continuous <- property_plot_template(dataset_unfamiliar_child_long,
+                                   dataset_unfamiliar_child_long$correct_prop, 
+                                   dataset_unfamiliar_child_long$proportion,
+                                   dataset_unfamiliar_child_long$response_type)
+
+dataset_unfamiliar_child_long_all <- dataset_unfamiliar_child_long %>% 
+  filter(response_type == "all")
+
+plot_all <- property_plot_template(dataset_unfamiliar_child_long_all,
+                                   dataset_unfamiliar_child_long_all$correct_prop, 
+                                   dataset_unfamiliar_child_long_all$proportion,
+                                   dataset_unfamiliar_child_long_all$response_type)
 
 plot_lots <- property_plot_template(dataset_unfamiliar_child,
                                     dataset_unfamiliar_child$age_exact, 
@@ -592,28 +651,146 @@ plot_some <- property_plot_template(dataset_unfamiliar_child,
                                     dataset_unfamiliar_child$age_exact, 
                                     dataset_unfamiliar_child$prop_some)
 
+dataset_familiar_correct_child <- dataset_familiar_child %>% 
+  filter(age_cat != "35") %>% 
+  select(id, correct_prop) %>% 
+  distinct(id, correct_prop)
 
+dataset_long$response <- ifelse(dataset_long$response == "0", 1, dataset_long$response)
 dataset_unfamiliar_plot <- dataset_long %>% 
-  filter(type == "unfamiliar") %>% 
+  filter(type == "unfamiliar", 
+         age_cat != "35") %>% 
   dplyr::mutate(response_all = ifelse(response == 3, 1, 0),
                 response_lots = ifelse(response == 2, 1, 0),
                 response_some = ifelse(response == 1, 1, 0)) %>% 
+  full_join(dataset_familiar_correct_child, by = "id") %>% 
+  group_by(property, correct_prop) %>% 
+  dplyr::mutate(prop_all = mean(response_all),
+                prop_lots = mean(response_lots),
+                prop_some = mean(response_some)) %>% 
+  distinct(correct_prop, property, .keep_all = TRUE) %>% 
+  select(correct_prop, property, prop_all, prop_lots, prop_some) %>% 
+  gather(response_type, prop, -correct_prop, -property) %>% 
+  mutate(response_type = gsub("prop_", "", response_type))
+
+
+dataset_property_plot <- dataset_long %>% 
+  filter(type == "unfamiliar", 
+         age_cat != "35") %>% 
+  dplyr::mutate(response_all = ifelse(response == 3, 1, 0),
+                response_lots = ifelse(response == 2, 1, 0),
+                response_some = ifelse(response == 1, 1, 0)) %>% 
+  full_join(dataset_familiar_correct_child, by = "id") %>% 
+  group_by(property, age_cat) %>% 
+  dplyr::mutate(prop_all = mean(response_all),
+                prop_lots = mean(response_lots),
+                prop_some = mean(response_some)) %>% 
+  distinct(property, age_cat, .keep_all = TRUE) %>% 
+  select(property, age_cat, prop_all, prop_lots, prop_some) %>% 
+  gather(response_type, prop, -property, -age_cat) %>% 
+  mutate(response_type = gsub("prop_", "", response_type))
+ 
+dataset_property_plot_individual <- dataset_long %>% 
+  filter(type == "unfamiliar", 
+         age_cat != "35") %>% 
+  dplyr::mutate(response_all = ifelse(response == 3, 1, 0),
+                response_lots = ifelse(response == 2, 1, 0),
+                response_some = ifelse(response == 1, 1, 0)) %>% 
+  full_join(dataset_familiar_correct_child, by = "id") %>% 
+  group_by(id, property) %>% 
+  dplyr::mutate(prop_all = mean(response_all),
+                prop_lots = mean(response_lots),
+                prop_some = mean(response_some)) %>% 
+  distinct(id, property, .keep_all = TRUE) %>% 
+  select(id, property, age_cat, prop_all, prop_lots, prop_some) %>% 
+  gather(response_type, prop, -id, -property, -age_cat) %>% 
+  mutate(response_type = gsub("prop_", "", response_type))
+  
+
+test <- summarySE(dataset_property_plot_individual, measurevar="prop", groupvars=c("property","response_type", "age_cat"))
+
+test_all <- test %>% 
+  filter(response_type == "all")
+  
+plot_property <- ggplot(test, 
+                       aes(x = property,
+                           y = prop,
+                           color = response_type)) +
+  facet_grid( . ~ age_cat ) +
+  geom_point(size = 10) +
+  geom_errorbar(aes(x = property, 
+                    ymin = prop - se, 
+                    ymax = prop + se), 
+                width = .05
+  ) +
+  theme_classic() + 
+  labs(x = "Property Type",
+       y = "Proportion of all, lots, and some responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = c(0, .1, .2, .3, .4, .5),
+                     labels = c("0%", "10%", "20%", "30%", "40%", "50%")) +
+  coord_cartesian(ylim=c(0,1)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14)
+        ) +
+  guides(color = FALSE)
+
+property_stackedbar <- ggplot(dataset_property_plot, 
+                       aes(x = property,
+                           y = prop, 
+                           fill = response_type)) +
+  geom_bar(stat = "identity") +
+  theme_classic() + 
+  labs(x = "Property Type",
+       y = "Proportion of all, lots, and some responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0)) +
+  coord_cartesian(ylim=c(0,1)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14)
+        )
+
+dataset_unfamiliar_plot_age <- dataset_long %>% 
+  filter(type == "unfamiliar", 
+         age_cat != "35") %>% 
+  dplyr::mutate(response_all = ifelse(response == 3, 1, 0),
+                response_lots = ifelse(response == 2, 1, 0),
+                response_some = ifelse(response == 1, 1, 0)) %>% 
+  full_join(dataset_familiar_correct_child, by = "id") %>% 
   group_by(property, age_cat) %>% 
   dplyr::mutate(prop_all = mean(response_all),
                 prop_lots = mean(response_lots),
                 prop_some = mean(response_some)) %>% 
   distinct(age_cat, property, .keep_all = TRUE) %>% 
   select(age_cat, property, prop_all, prop_lots, prop_some) %>% 
-  gather(response_type, prop, -age_cat, -property)
+  gather(response_type, prop, -age_cat, -property) 
 
-property_stackedbar <- ggplot(dataset_unfamiliar_plot, 
+property_stackedbar_age <- ggplot(dataset_unfamiliar_plot_age, 
                        aes(x = age_cat,
                            y = prop, 
                            fill = response_type)) +
   geom_bar(stat = "identity") +
-  facet_wrap( ~ property) + 
-  labs(x = "Age",
-       y = "Proportion of responses",
+  facet_grid( . ~ property) + 
+  theme_classic() + 
+  labs(x = "Knowledge of property prevalence in familiar categories",
+       y = "Proportion of all, lots, and some responses",
        fill = element_blank()) +
   scale_y_continuous(expand = c(0, 0)) +
   theme(panel.grid.major = element_blank(),
@@ -627,8 +804,68 @@ property_stackedbar <- ggplot(dataset_unfamiliar_plot,
         strip.text = element_text(size = 14),
         legend.text = element_text(size = 14)
         )
+```
+
+temporary property breakdown
+```{r}
+dataset_temporary <- dataset_long %>% 
+  filter(type == "unfamiliar", 
+         age_cat != "35",
+         property == "temporary") %>% 
+  dplyr::mutate(response_all = ifelse(response == 3, 1, 0),
+                response_lots = ifelse(response == 2, 1, 0),
+                response_some = ifelse(response == 1, 1, 0)) %>% 
+  full_join(dataset_familiar_correct_child, by = "id") %>% 
+  group_by(animal) %>% 
+  dplyr::mutate(prop_all = mean(response_all),
+                prop_lots = mean(response_lots),
+                prop_some = mean(response_some)) %>% 
+  distinct(animal, .keep_all = TRUE) %>% 
+  select(animal, prop_all, prop_lots, prop_some) %>% 
+  gather(response_type, prop, -animal) %>% 
+  mutate(response_type = gsub("prop_", "", response_type))
 
 ```
+
+
+```{r}
+
+plot_temporary <- ggplot(dataset_temporary, 
+                       aes(x = animal,
+                           y = prop,
+                           color = response_type)) +
+  # geom_count(data = dataset_property_plot_individual,
+  #            position = position_jitter(w = .1, h = .025),
+  #            alpha = .4) +
+  geom_point(size = 10) +
+  # geom_errorbar(aes(x = animal, 
+  #                   ymin = prop - se, 
+  #                   ymax = prop + se), 
+  #               width = .05
+  # ) +
+  theme_classic() + 
+  labs(x = "Property Type",
+       y = "Proportion of all, lots, and some responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = c(0, .25, .5, .75, 1),
+                     labels = c("0%", "25%", "50%", "75%", "100%")) +
+  coord_cartesian(ylim=c(0,1)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 14, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 14)
+        ) +
+  guides(color = FALSE)
+```
+
+
 
 This plot looks at proportion of all, lots, and just some responses by age (categorically) x property type
 ```{r}
@@ -649,4 +886,57 @@ Proportion of some responses by age (continuous); kid data only
 ```{r}
 plot_some
 ```
+
+Analyzing the practice trials
+```{r}
+dataset_practice <- dataset_long %>% 
+  filter(type == "practice", age_cat != 35)
+
+dataset_correct_plot <- dataset_familiar_highvar_child %>% 
+  select(id, correct_prop)
+
+test <- full_join(dataset_practice, dataset_correct_plot, by = "id") 
+
+test$correct_group <- ifelse(test$correct_prop < .33, 0, 
+                                ifelse(test$correct_prop > .75, 2, 1))
+
+test$type <- ifelse(test$animal == "eye" | test$animal == "square", "all", 
+                    ifelse(test$animal == "triangle" | test$animal == "read", "lots", "some"))
+
+practice_means <- test %>% 
+  dplyr::group_by(correct_group, type) %>% 
+  dplyr::summarize(mean = mean(response), 
+         n = length(response)) 
+
+
+practice_stackedbar <- ggplot(test, 
+                       aes(x = correct_prop,
+                           y = type, 
+                           color = type)) +
+  geom_point(
+    # shape = 1,
+    size = 3,
+    position = position_jitter(w = 0.05, h = 0.1)
+    ) +
+  theme_classic() + 
+  labs(x = "Knowledge of property prevalence in familiar categories",
+       y = "Proportion of all, lots, and some responses",
+       fill = element_blank()) +
+  scale_y_continuous(expand = c(0, 0),
+                     breaks = c(1, 2, 3)) +
+  theme(panel.grid.major = element_blank(),
+        strip.background = element_blank(),
+        axis.title.x = element_text(size = 22, face = "bold",
+                                    margin = margin(t = 20, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 22, face = "bold",
+                                    margin = margin(t = 0, r = 20, b = 0, l = 0)),
+        axis.text.x = element_text(size = 20),
+        axis.text.y = element_text(size = 20),
+        strip.text = element_text(size = 14),
+        legend.text = element_text(size = 22)
+        ) + 
+  scale_color_manual(values=c("#D81B60", "#1E88E5", "#FFC107")) 
+
+```
+
 
